@@ -17,13 +17,17 @@ import requests
 
 VK_TOKEN = os.environ["VK_GROUP_TOKEN"]
 GROUP_ID = int(os.environ["VK_GROUP_ID"])
-PROVIDER = os.environ.get("LLM_PROVIDER", "yandex").lower()   # yandex | anthropic
+PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()   # gemini | yandex | anthropic
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 YANDEX_KEY = os.environ.get("YANDEX_API_KEY", "")
 YANDEX_FOLDER = os.environ.get("YANDEX_FOLDER_ID", "")
 YANDEX_MODEL = os.environ.get("YANDEX_MODEL", "yandexgpt/latest")  # или yandexgpt-lite/latest — дешевле
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_VK_IDS", "").replace(" ", "").split(",") if x]
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHATS = [x for x in os.environ.get("TELEGRAM_CHAT_ID", "").replace(" ", "").split(",") if x]
 PAUSE_HOURS = float(os.environ.get("PAUSE_AFTER_ADMIN_HOURS", "12"))
 V = "5.199"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -113,6 +117,11 @@ def user_link(uid):
         return f"vk.com/id{uid}"
 
 def notify_admins(text):
+    for c in TG_CHATS:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                          data={"chat_id": c, "text": text, "disable_web_page_preview": "true"}, timeout=30).raise_for_status()
+        except Exception as e: log(f"telegram {c} err {e}")
     for a in ADMIN_IDS:
         try: send(a, text)
         except Exception as e: log(f"notify {a} err {e}")
@@ -135,8 +144,20 @@ def ask_anthropic(uid):
     r.raise_for_status()
     return "".join(b.get("text", "") for b in r.json()["content"]).strip()
 
+def ask_gemini(uid):
+    contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in history(uid)]
+    body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}}
+    r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+                      json=body, timeout=60, headers={"x-goog-api-key": GEMINI_KEY})
+    r.raise_for_status()
+    parts = r.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+
 def ask_claude(uid):
-    return ask_anthropic(uid) if PROVIDER == "anthropic" else ask_yandex(uid)
+    if PROVIDER == "anthropic": return ask_anthropic(uid)
+    if PROVIDER == "yandex": return ask_yandex(uid)
+    return ask_gemini(uid)
 
 # ---------- логика ----------
 def welcome(uid, reason):
